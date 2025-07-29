@@ -46,19 +46,26 @@ async def play(ctx, *, url):
     ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
-        'default_search': 'ytsearch',
+        'default_search': 'ytsearch1',
         'noplaylist': True,
     }
 
-    await ctx.send("⏳ Getting audio...")
+    await ctx.send("⏳ Searching...")
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
+
+        # If search result, get first entry
+        if 'entries' in info:
+            info = info['entries'][0]
+
         audio_url = info['url']
         title = info.get('title', 'Unknown Title')
 
     ffmpeg_options = {
         'options': '-vn'
     }
+
     source = await discord.FFmpegOpusAudio.from_probe(audio_url, **ffmpeg_options)
     vc.play(source, after=lambda e: print(f"Player error: {e}" if e else None))
 
