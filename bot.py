@@ -3,37 +3,81 @@ from discord.ext import commands
 import yt_dlp
 import asyncio
 import os
-from dotenv import load_dotenv
 import json
 import time
+from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+from concurrent.futures import ThreadPoolExecutor
 
-# =======================
-# CONFIG
-# =======================
-API_URL = "https://api.tracker.gg/api/v2/marvel-rivals/standard/profile/ign/jimby3"
+# ======================
+# CONFIGURATION
+# ======================
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+API_URL = "https://api.tracker.gg/api/v2/marvel-rivals/standard/profile/ign/jimby3"
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
+executor = ThreadPoolExecutor(max_workers=1)
 
+# Cache variables
+cached_data = None
+last_fetch_time = 0
+CACHE_DURATION = 180  # 3 minutes
 
-# =======================
-# EVENTS
-# =======================
+# ======================
+# SELENIUM FETCH FUNCTION
+# ======================
+def fetch_rivals_data():
+    """Fetch Marvel Rivals stats via Selenium browser automation."""
+    print("🔄 Running Selenium to fetch data...")
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36")
+
+    # Auto-detect Chrome binary
+    for path in ["/usr/bin/google-chrome", "/usr/bin/chromium-browser", "/usr/bin/chromium"]:
+        if os.path.exists(path):
+            options.binary_location = path
+            break
+
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    data = None
+
+    try:
+        driver.get(API_URL)
+        time.sleep(3)  # wait for page
+        response_text = driver.find_element("tag name", "pre").text
+        data = json.loads(response_text)
+
+        # Save to file
+        with open("rivals_data.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+
+    except Exception as e:
+        print(f"❌ Error fetching data: {e}")
+    finally:
+        driver.quit()
+
+    return data
+
+# ======================
+# BOT EVENTS
+# ======================
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user.name}")
 
-
-# =======================
+# ======================
 # VOICE COMMANDS
-# =======================
+# ======================
 @bot.command()
 async def join(ctx):
     if ctx.author.voice:
@@ -43,7 +87,6 @@ async def join(ctx):
     else:
         await ctx.send("❌ You must be in a voice channel to use this command.")
 
-
 @bot.command()
 async def leave(ctx):
     if ctx.voice_client:
@@ -51,7 +94,6 @@ async def leave(ctx):
         await ctx.send("👋 Left the voice channel.")
     else:
         await ctx.send("❌ I'm not in a voice channel.")
-
 
 @bot.command()
 async def play(ctx, *, url):
@@ -89,43 +131,28 @@ async def play(ctx, *, url):
         await ctx.send(f"❌ Error while playing: `{str(e)}`")
         print("Play command error:", e)
 
-
-# =======================
+# ======================
 # MARVEL RIVALS STATS COMMAND
-# =======================
-def fetch_rivals_data():
-    """Uses Selenium to fetch data from Tracker.gg and return JSON"""
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36")
-
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    data = None
-
-    try:
-        driver.get(API_URL)
-        time.sleep(3)
-        response_text = driver.find_element("tag name", "pre").text
-        data = json.loads(response_text)
-    except Exception as e:
-        print(f"❌ Error fetching data: {e}")
-    finally:
-        driver.quit()
-
-    return data
-
-
+# ======================
 @bot.command()
 async def stats(ctx):
+    global cached_data, last_fetch_time
+
     await ctx.send("🔄 Fetching latest stats, please wait...")
-    data = fetch_rivals_data()
+
+    current_time = time.time()
+    loop = asyncio.get_event_loop()
+
+    if cached_data and (current_time - last_fetch_time) < CACHE_DURATION:
+        data = cached_data
+        print("✅ Using cached data.")
+    else:
+        data = await loop.run_in_executor(executor, fetch_rivals_data)
+        cached_data = data
+        last_fetch_time = time.time()
+
     if not data:
-        await ctx.send("⚠️ Could not fetch data at this time.")
-        return
+        return await ctx.send("⚠️ Could not fetch data at this time.")
 
     username = data.get("data", {}).get("platformInfo", {}).get("platformUserHandle", "Unknown")
     segments = data.get("data", {}).get("segments", [])
@@ -145,8 +172,7 @@ async def stats(ctx):
     embed.add_field(name="🎮 Matches Played", value=matches_played, inline=True)
     await ctx.send(embed=embed)
 
-
-# =======================
+# ======================
 # RUN BOT
-# =======================
+# ======================
 bot.run(TOKEN)
