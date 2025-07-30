@@ -1,178 +1,218 @@
-import discord
-from discord.ext import commands
-import yt_dlp
-import asyncio
-import os
-import json
-import time
-from dotenv import load_dotenv
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from concurrent.futures import ThreadPoolExecutor
+"""
+Copyright © Krypton 2019-Present - https://github.com/kkrypt0nn (https://krypton.ninja)
+Description:
+🐍 A simple template to start to code your own and personalized Discord bot in Python
 
-# ======================
-# CONFIGURATION
-# ======================
+Version: 6.3.0
+"""
+
+import json
+import logging
+import os
+import platform
+import random
+import sys
+
+import aiosqlite
+import discord
+from discord.ext import commands, tasks
+from discord.ext.commands import Context
+from dotenv import load_dotenv
+
+from database import DatabaseManager
+
 load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
-API_URL = "https://api.tracker.gg/api/v2/marvel-rivals/standard/profile/ign/jimby3"
+
+"""
+Setup bot intents (events restrictions)
+For more information about intents, please go to:
+https://discordpy.readthedocs.io/en/latest/intents.html
+"""
 
 intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
-executor = ThreadPoolExecutor(max_workers=1)
+# Uncomment if you need message content (and enable in Discord Dev Portal)
+# intents.message_content = True
 
-# Cache variables
-cached_data = None
-last_fetch_time = 0
-CACHE_DURATION = 180  # 3 minutes
 
-# ======================
-# SELENIUM FETCH FUNCTION
-# ======================
-def fetch_rivals_data():
-    """Fetch Marvel Rivals stats via Selenium browser automation."""
-    print("🔄 Running Selenium to fetch data...")
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36")
+# -----------------------------
+# Custom Logger
+# -----------------------------
+class LoggingFormatter(logging.Formatter):
+    black = "\x1b[30m"
+    red = "\x1b[31m"
+    green = "\x1b[32m"
+    yellow = "\x1b[33m"
+    blue = "\x1b[34m"
+    gray = "\x1b[38m"
+    reset = "\x1b[0m"
+    bold = "\x1b[1m"
 
-    # Auto-detect Chrome binary
-    for path in ["/usr/bin/google-chrome", "/usr/bin/chromium-browser", "/usr/bin/chromium"]:
-        if os.path.exists(path):
-            options.binary_location = path
-            break
-
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    data = None
-
-    try:
-        driver.get(API_URL)
-        time.sleep(3)  # wait for page
-        response_text = driver.find_element("tag name", "pre").text
-        data = json.loads(response_text)
-
-        # Save to file
-        with open("rivals_data.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-
-    except Exception as e:
-        print(f"❌ Error fetching data: {e}")
-    finally:
-        driver.quit()
-
-    return data
-
-# ======================
-# BOT EVENTS
-# ======================
-@bot.event
-async def on_ready():
-    print(f"✅ Logged in as {bot.user.name}")
-
-# ======================
-# VOICE COMMANDS
-# ======================
-@bot.command()
-async def join(ctx):
-    if ctx.author.voice:
-        channel = ctx.author.voice.channel
-        await channel.connect()
-        await ctx.send(f"🔊 Joined {channel}")
-    else:
-        await ctx.send("❌ You must be in a voice channel to use this command.")
-
-@bot.command()
-async def leave(ctx):
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("👋 Left the voice channel.")
-    else:
-        await ctx.send("❌ I'm not in a voice channel.")
-
-@bot.command()
-async def play(ctx, *, url):
-    vc = ctx.voice_client
-    if not vc:
-        if ctx.author.voice:
-            vc = await ctx.author.voice.channel.connect()
-        else:
-            return await ctx.send("❌ Join a voice channel first!")
-
-    await ctx.send("⏳ Searching for audio...")
-
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'default_search': 'ytsearch1',
-        'noplaylist': True,
+    COLORS = {
+        logging.DEBUG: gray + bold,
+        logging.INFO: blue + bold,
+        logging.WARNING: yellow + bold,
+        logging.ERROR: red,
+        logging.CRITICAL: red + bold,
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if 'entries' in info:
-                info = info['entries'][0]
-            audio_url = info['url']
-            title = info.get('title', 'Unknown Title')
+    def format(self, record):
+        log_color = self.COLORS[record.levelno]
+        format = "(black){asctime}(reset) (levelcolor){levelname:<8}(reset) (green){name}(reset) {message}"
+        format = format.replace("(black)", self.black + self.bold)
+        format = format.replace("(reset)", self.reset)
+        format = format.replace("(levelcolor)", log_color)
+        format = format.replace("(green)", self.green + self.bold)
+        formatter = logging.Formatter(format, "%Y-%m-%d %H:%M:%S", style="{")
+        return formatter.format(record)
 
-        ffmpeg_options = {'options': '-vn'}
-        source = await discord.FFmpegOpusAudio.from_probe(audio_url, **ffmpeg_options)
-        vc.play(source, after=lambda e: print(f"Player error: {e}" if e else None))
 
-        await ctx.send(f"🎶 Now playing: **{title}**")
+logger = logging.getLogger("discord_bot")
+logger.setLevel(logging.INFO)
 
-    except Exception as e:
-        await ctx.send(f"❌ Error while playing: `{str(e)}`")
-        print("Play command error:", e)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(LoggingFormatter())
 
-# ======================
-# MARVEL RIVALS STATS COMMAND
-# ======================
-@bot.command()
-async def stats(ctx):
-    global cached_data, last_fetch_time
+file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w")
+file_handler_formatter = logging.Formatter(
+    "[{asctime}] [{levelname:<8}] {name}: {message}", "%Y-%m-%d %H:%M:%S", style="{"
+)
+file_handler.setFormatter(file_handler_formatter)
 
-    await ctx.send("🔄 Fetching latest stats, please wait...")
+logger.addHandler(console_handler)
+logger.addHandler(file_handler)
 
-    current_time = time.time()
-    loop = asyncio.get_event_loop()
 
-    if cached_data and (current_time - last_fetch_time) < CACHE_DURATION:
-        data = cached_data
-        print("✅ Using cached data.")
-    else:
-        data = await loop.run_in_executor(executor, fetch_rivals_data)
-        cached_data = data
-        last_fetch_time = time.time()
+# -----------------------------
+# Bot Class
+# -----------------------------
+class DiscordBot(commands.Bot):
+    def __init__(self) -> None:
+        super().__init__(
+            command_prefix=commands.when_mentioned_or(os.getenv("PREFIX")),
+            intents=intents,
+            help_command=None,
+        )
+        self.logger = logger
+        self.database = None
+        self.bot_prefix = os.getenv("PREFIX")
+        self.invite_link = os.getenv("INVITE_LINK")
 
-    if not data:
-        return await ctx.send("⚠️ Could not fetch data at this time.")
+    async def init_db(self) -> None:
+        async with aiosqlite.connect(
+            f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
+        ) as db:
+            with open(
+                f"{os.path.realpath(os.path.dirname(__file__))}/database/schema.sql",
+                encoding="utf-8",
+            ) as file:
+                await db.executescript(file.read())
+            await db.commit()
 
-    username = data.get("data", {}).get("platformInfo", {}).get("platformUserHandle", "Unknown")
-    segments = data.get("data", {}).get("segments", [])
-    wins = "N/A"
-    kills = "N/A"
-    matches_played = "N/A"
+    async def load_cogs(self) -> None:
+        for file in os.listdir(f"{os.path.realpath(os.path.dirname(__file__))}/cogs"):
+            if file.endswith(".py"):
+                extension = file[:-3]
+                try:
+                    await self.load_extension(f"cogs.{extension}")
+                    self.logger.info(f"Loaded extension '{extension}'")
+                except Exception as e:
+                    exception = f"{type(e).__name__}: {e}"
+                    self.logger.error(f"Failed to load extension {extension}\n{exception}")
 
-    if segments:
-        stats = segments[0].get("stats", {})
-        wins = stats.get("wins", {}).get("value", "N/A")
-        kills = stats.get("kills", {}).get("value", "N/A")
-        matches_played = stats.get("matchesPlayed", {}).get("value", "N/A")
+    @tasks.loop(minutes=1.0)
+    async def status_task(self) -> None:
+        statuses = ["with you!", "with Krypton!", "with humans!"]
+        await self.change_presence(activity=discord.Game(random.choice(statuses)))
 
-    embed = discord.Embed(title=f"Marvel Rivals Stats for {username}", color=0x00ffcc)
-    embed.add_field(name="🏆 Wins", value=wins, inline=True)
-    embed.add_field(name="🔫 Kills", value=kills, inline=True)
-    embed.add_field(name="🎮 Matches Played", value=matches_played, inline=True)
-    await ctx.send(embed=embed)
+    @status_task.before_loop
+    async def before_status_task(self) -> None:
+        await self.wait_until_ready()
 
-# ======================
-# RUN BOT
-# ======================
-bot.run(TOKEN)
+    async def setup_hook(self) -> None:
+        self.logger.info(f"Logged in as {self.user.name}")
+        self.logger.info(f"discord.py API version: {discord.__version__}")
+        self.logger.info(f"Python version: {platform.python_version()}")
+        self.logger.info(f"Running on: {platform.system()} {platform.release()} ({os.name})")
+        self.logger.info("-------------------")
+        await self.init_db()
+        await self.load_cogs()
+        self.status_task.start()
+        self.database = DatabaseManager(
+            connection=await aiosqlite.connect(
+                f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
+            )
+        )
+
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author == self.user or message.author.bot:
+            return
+        await self.process_commands(message)
+
+    async def on_command_completion(self, context: Context) -> None:
+        full_command_name = context.command.qualified_name
+        executed_command = str(full_command_name.split(" ")[0])
+        if context.guild is not None:
+            self.logger.info(
+                f"Executed {executed_command} command in {context.guild.name} (ID: {context.guild.id}) "
+                f"by {context.author} (ID: {context.author.id})"
+            )
+        else:
+            self.logger.info(
+                f"Executed {executed_command} command by {context.author} (ID: {context.author.id}) in DMs"
+            )
+
+    async def on_command_error(self, context: Context, error) -> None:
+        if isinstance(error, commands.CommandOnCooldown):
+            minutes, seconds = divmod(error.retry_after, 60)
+            hours, minutes = divmod(minutes, 60)
+            hours = hours % 24
+            embed = discord.Embed(
+                description=f"**Please slow down** - You can use this command again in "
+                            f"{f'{round(hours)} hours' if round(hours) > 0 else ''} "
+                            f"{f'{round(minutes)} minutes' if round(minutes) > 0 else ''} "
+                            f"{f'{round(seconds)} seconds' if round(seconds) > 0 else ''}.",
+                color=0xE02B2B,
+            )
+            await context.send(embed=embed)
+
+        elif isinstance(error, commands.NotOwner):
+            embed = discord.Embed(
+                description="You are not the owner of the bot!", color=0xE02B2B
+            )
+            await context.send(embed=embed)
+            if context.guild:
+                self.logger.warning(
+                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in "
+                    f"{context.guild.name} (ID: {context.guild.id}), but the user is not an owner."
+                )
+            else:
+                self.logger.warning(
+                    f"{context.author} (ID: {context.author.id}) tried to execute an owner-only command in DMs, "
+                    f"but the user is not an owner."
+                )
+
+        elif isinstance(error, commands.MissingPermissions):
+            embed = discord.Embed(
+                description="You do not have the required permissions to execute this command.",
+                color=0xE02B2B,
+            )
+            await context.send(embed=embed)
+
+        elif isinstance(error, commands.BotMissingPermissions):
+            embed = discord.Embed(
+                description="I do not have the required permissions to execute this command.",
+                color=0xE02B2B,
+            )
+            await context.send(embed=embed)
+
+        else:
+            self.logger.error(f"An unexpected error occurred: {type(error).__name__}: {error}")
+            raise error
+
+
+# -----------------------------
+# Run the Bot
+# -----------------------------
+if __name__ == "__main__":
+    bot = DiscordBot()
+    bot.run(os.getenv("TOKEN"))
